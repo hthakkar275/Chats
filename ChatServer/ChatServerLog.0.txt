@@ -1,0 +1,4 @@
+2018-10-26 20:38:21.113 INFO    - org.hemant.thakkar.chat.server.ChatServerApplication main - Starting chat server 
+2018-10-26 20:39:31.907 INFO    - org.hemant.thakkar.chat.server.UserSessionManager start - User hemant connected 
+2018-10-26 20:39:46.522 INFO    - org.hemant.thakkar.chat.server.UserSession processData - Message received from hemant 
+2018-10-26 20:46:26.932 INFO    - org.hemant.thakkar.chat.server.UserSessionManager start - User hemant disconnected 

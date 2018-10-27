@@ -1,0 +1,2 @@
+2018-10-26 20:39:02.570 INFO    - org.hemant.thakkar.chat.client.ChatClientApplication main - Starting chat client 
+2018-10-26 20:39:12.217 SEVERE  - org.hemant.thakkar.chat.client.TextUserOutput sendOutput - File for text-based output is not open 
