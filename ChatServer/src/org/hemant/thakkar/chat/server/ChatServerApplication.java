@@ -7,10 +7,11 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.Set;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
@@ -237,22 +238,28 @@ class UserSessionManager {
 						// action and state based on its current state.
 						String usernameAttachedToSelectorKey = selectedKey.attachment().toString();
 						UserSession userSession = userSessions.get(usernameAttachedToSelectorKey);
-						userSession.processData();
-						
-						// If the user session is just entered the connected-with-username state,
-						// let's remove the old server-generated username association and replace 
-						// with real client-supplied username.
-						if (userSession.getSessionState() == UserSessionState.ConnectedWithUsername) {
-							String clientSuppliedUsername = userSession.getId();
-							userSessions.remove(usernameAttachedToSelectorKey);
-							userSessions.put(clientSuppliedUsername, userSession);
-							selectedKey.attach(clientSuppliedUsername);
-							userSession.setReadyToReceive();
-							logger.info("User " + clientSuppliedUsername + " connected");
-						} else if (userSession.getSessionState() == UserSessionState.Disconnected) {
-							logger.info("User " + userSession.getId() + " disconnected");
+						if (userSession != null) {
+							userSession.processData();
+							
+							// If the user session is just entered the connected-with-username state,
+							// let's remove the old server-generated username association and replace 
+							// with real client-supplied username.
+							if (userSession.getSessionState() == UserSessionState.ConnectedWithUsername) {
+								String clientSuppliedUsername = userSession.getId();
+								userSessions.remove(usernameAttachedToSelectorKey);
+								userSessions.put(clientSuppliedUsername, userSession);
+								selectedKey.attach(clientSuppliedUsername);
+								userSession.setReadyToReceive();
+								logger.info("User " + clientSuppliedUsername + " connected");
+							} else if (userSession.getSessionState() == UserSessionState.Disconnected) {
+								logger.info("User " + userSession.getId() + " disconnected");
+								selectedKey.cancel();
+								userSessions.remove(userSession.getId());
+							}
+						} else {
+							logger.warning("User session for selected key " 
+									+ selectedKey.attachment().toString() + " is no longer available.");
 							selectedKey.cancel();
-							userSessions.remove(userSession.getId());
 						}
 					}
 					selectedKeysIter.remove();
@@ -376,11 +383,11 @@ class UserSession implements MessageObserver {
 								// Message boundary found. Get the complete message.
 								logger.info("Message received from " + username);
 								Message message = createMessage(partialMessage.toString());
-								MessageDistributor.getInstance().distributeMessage(message);
+								MessageProcessor.getInstance().process(message);
 								
 								// Cleanup the partial message for the next message data.
 								partialMessage = new StringBuilder();
-							}
+							} 
 						}
 						byteBuffer.compact();
 						readBytes = socketChannel.read(byteBuffer);
@@ -474,6 +481,38 @@ class UserSession implements MessageObserver {
 }
 
 /**
+ * If the user message is a command, what type of command?
+ * 
+ * Invalid:  When user's command can not be determined
+ * Block:  User wishes to block message from specified user
+ * Unblock: User wishes to unblock previously blocked user
+ * 
+ * Some commands like quit and connect do not have any arguments while
+ * others may take one or more arguments. See the javadoc on 
+ * TextUserInterface for more details.
+ * 
+ * @author Hemant Thakkar
+ *
+ */
+enum Command {
+	Invalid,
+	Block,
+	Unblock
+}
+
+/**
+ * Describes the user's input as either a command to be interpreted by the
+ * client or a message to be sent to the server
+ * 
+ * @author Hemant Thakkar
+ *
+ */
+enum MessageType {
+	Command,
+	Message
+}
+
+/**
  * Message DTO object used to share data between producer session and consumer
  * session via the MessageDistributor
  * 
@@ -513,23 +552,68 @@ class Message {
 }
 
 /**
- * Distributes received messages to other chat sessions. Maintains
- * a collection of MessageObserver (i.e. UserSession instances) that
- * have expressed interest in receiving messages from other users.
+ * Process received messages. Interpret whether it is a command or a
+ * message to distribute to other chat sessions. 
  * 
  * This is a singleton that is initialized at creation time.
  * 
  * @author Hemant Thakkar
  *
  */
-class MessageDistributor {
-	private static MessageDistributor self = new MessageDistributor();
-	private Map<String, MessageObserver> observers;
+class MessageProcessor {
+	private static final Logger logger = Logger.getLogger(MessageProcessor.class.getName());
+	private static MessageProcessor self = new MessageProcessor();
 	
-	public static MessageDistributor getInstance() {
+	public static MessageProcessor getInstance() {
 		return self;
 	}
 	
+	private MessageProcessor() {
+		// Do nothing
+	}
+
+	/**
+	 * Determine if it is a command or a message. Message beginning with "\\" is 
+	 * interpreted as command. Otherwise a message. 
+	 * @return
+	 */
+	private MessageType getMessageType(String data) {
+		if (data.startsWith("\\\\")) {
+			return MessageType.Command;
+		} else {
+			return MessageType.Message;
+		}
+	}
+
+	/**
+	 * If message is a command, determine the command type. Commands are
+	 * case insensitive.
+	 * 
+	 * @param input
+	 * @return
+	 */
+	private Command getCommand(String data) {
+		String dataExCommandPrefix = data.substring(2);
+		String[] commandTokens = dataExCommandPrefix.split("\\s+");
+		String command = commandTokens[0].trim();
+		Command commandEnum = Command.Invalid;
+		if (command.equalsIgnoreCase("block")) {
+			commandEnum = Command.Block;
+		} else if (command.equalsIgnoreCase("unblock")) {
+			commandEnum = Command.Unblock;
+		} 
+		return commandEnum;
+	}
+
+	private String[] getCommandArgs(String data) {
+		String[] commandTokens = data.split("\\s+");
+		String[] args = new String[commandTokens.length - 1];
+		for (int index = 1; index < commandTokens.length; index++) {
+			args[index - 1] = commandTokens[index];
+		}
+		return args;
+	}
+
 	/**
 	 * Invoked by user session when it has received a full message
 	 * Message is then distributed to all other sessions unless if
@@ -542,6 +626,55 @@ class MessageDistributor {
 	 *  
 	 * @param message
 	 */
+	public void process(Message message) {
+		MessageType messageType = getMessageType(message.getData());
+		if (messageType == MessageType.Message) {
+			MessageDistributor.getInstance().distributeMessage(message);
+		} else {
+			Command command = getCommand(message.getData());
+			String[] commandArgs = getCommandArgs(message.getData());
+			if (command == Command.Block) {
+				logger.finest("User " + message.getSource() 
+						+ " requested to block messages from " + commandArgs[0]);
+				MessageDistributor.getInstance().blockSource(commandArgs[0], message.getSource());
+			} else if (command == Command.Unblock) {
+				logger.finest("User " + message.getSource() 
+				+ " requested to unblock messages from " + commandArgs[0]);
+				MessageDistributor.getInstance().unblockSource(commandArgs[0], message.getSource());
+			} else {
+				logger.fine("Invalid command [" + message.getData() 
+					+ "] from user " + message.getSource());
+			}
+		}
+	}
+	
+}
+
+/**
+ * Distributes received messages to other chat sessions. Maintains
+ * a collection of MessageObserver (i.e. UserSession instances) that
+ * have expressed interest in receiving messages from other users.
+ * 
+ * This is a singleton that is initialized at creation time.
+ * 
+ * @author Hemant Thakkar
+ *
+ */
+class MessageDistributor {
+	private static final Logger logger = Logger.getLogger(MessageDistributor.class.getName());
+	private static MessageDistributor self = new MessageDistributor();
+	private Map<String, MessageObserver> observers;
+	private Map<String, List<String>> blocked;
+	
+	public static MessageDistributor getInstance() {
+		return self;
+	}
+	
+	private MessageDistributor() {
+		this.observers = new HashMap<>();
+		this.blocked = new HashMap<>();
+	}
+	
 	public void distributeMessage(Message message) {
 		String destination = message.getDestination();
 		// If the message has a specific detination, then only 
@@ -551,22 +684,28 @@ class MessageDistributor {
 			if (observer != null) {
 				String data = message.getData();
 				data = data.replaceFirst("to:" + destination, "");
-				observer.messageReceived(data);
+				sendMessage(data, message.getSource(), observer);
 			}
 		} else {
 			// Otherwise broadcast to all sessions.
 			for (MessageObserver observer : observers.values()) {
 				if (!message.getSource().equals(observer.getId())) {
-					observer.messageReceived(message.getData());
+					sendMessage(message.getData(), message.getSource(), observer);
 				}
 			}
 		}		
 	}
-
-	private MessageDistributor() {
-		this.observers = new HashMap<>();
-	}
 	
+	private void sendMessage(String data, String source, MessageObserver observer) {
+		List<String> usersBlockedByObserver = blocked.get(observer.getId());
+		if ((usersBlockedByObserver == null) ||
+				(!usersBlockedByObserver.contains(source))) {
+			observer.messageReceived(data);
+		} else {
+			logger.finest("Did not send message to " + observer.getId());
+		}
+	}
+
 	public void addObserver(MessageObserver observer) {
 		this.observers.put(observer.getId(), observer);
 	}
@@ -575,10 +714,19 @@ class MessageDistributor {
 		this.observers.remove(observer.getId());
 	}
 	
-	public void distributeMessages(Queue<Message> messages) {
-		while (!messages.isEmpty()) {
-			Message message = messages.poll();
-			distributeMessage(message);
+	public void blockSource(String source, String destination) {
+		List<String> destinationsBlockedBySource = blocked.get(source);
+		if (destinationsBlockedBySource == null) {
+			destinationsBlockedBySource = new ArrayList<String>();
+			blocked.put(source, destinationsBlockedBySource);
+		}
+		destinationsBlockedBySource.add(destination);
+	}
+	
+	public void unblockSource(String source, String destination) {
+		List<String> destinationsBlockedBySource = blocked.get(source);
+		if (destinationsBlockedBySource != null) {
+			destinationsBlockedBySource.remove(destination);
 		}
 	}
 	
