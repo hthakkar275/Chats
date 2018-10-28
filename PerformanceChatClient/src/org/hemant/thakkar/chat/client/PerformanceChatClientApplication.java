@@ -2,7 +2,9 @@ package org.hemant.thakkar.chat.client;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -18,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -150,7 +153,15 @@ public class PerformanceChatClientApplication {
 		UserConfiguration.getInstance().setServerPort(serverPort);
 		
 		// Create session group Callable instances and submit to the threadpool
-		String groupNamePrefix = "SessionGroup_";
+		String localHost = "";
+		try {
+			localHost = InetAddress.getLocalHost().getHostName();
+			logger.info("Will use host name as session group prefix: " + localHost);
+		} catch (UnknownHostException e1) {
+			localHost = UUID.randomUUID().toString();
+			logger.warning("Couldn't determnine local host name, so will use UUID as session group prefix: " + localHost);
+		}
+		String groupNamePrefix = localHost + "-SessionGroup-";
 		for (int index = 0; index < groupCount; index++) {
 			String groupName = groupNamePrefix + index;
 			UserSessionGroup userSessionGroup = 
@@ -228,12 +239,17 @@ class UserSessionGroup implements Callable<Boolean> {
 				UserSession userSession = new UserSession(username, userOutputStrategy);
 				userSessions.add(userSession);
 			}
-			
+
 			// Establish the chat session with server following the chat session protocol
 			for (UserSession userSession : userSessions) {
 				if (!userSession.establishSession()) {
 					userOutputStrategy.sendStatusOutput("User session " + userSession.getUsername() + " failed to establish");
 				} 
+				int randomSleep = random.nextInt(2000);
+				while (randomSleep < 1500) {
+					randomSleep = random.nextInt(2000);
+				}
+				Thread.sleep(randomSleep);
 			}
 			
 			// Spawn a message receiver in separate thread. This thread will listen
@@ -242,19 +258,24 @@ class UserSessionGroup implements Callable<Boolean> {
 			MessageReceiver messageReciever = new MessageReceiver(userSessions, userOutputStrategy);
 			Future<Boolean> messageReceiverFuture = executorService.submit(messageReciever);
 			
-			// Send 10 messages per session with up to two second random delay
+			// Send 2 messages from first session with 2 to 5 second random delay
 			// between each message transmission.
-			for (int index = 0; index < 10; index++) {
-				for (UserSession userSession : userSessions) {
-					String message = "User Session " + userSession.getUsername() + " message number " + index;
-					userSession.sendMessage(message);
-					Thread.sleep(random.nextInt(2) * 1000);
+			/*
+			UserSession messageSendingSession = userSessions.get(0);
+			for (int index = 0; index < 2; index++) {
+				String message = "User Session " + messageSendingSession.getUsername() + " message number " + index;
+				messageSendingSession.sendMessage(message);
+				int randomSleep = random.nextInt(5000);
+				while (randomSleep < 2000) {
+					randomSleep = random.nextInt(5000);
 				}
+				Thread.sleep(randomSleep);
 			}
 			userOutputStrategy.sendStatusOutput("Completed sending messages for session group " + groupName);
+			*/
 			
 			//Wait for some time for all message receipts to catch=up
-			Thread.sleep(600000);
+			Thread.sleep(60000);
 			messageReciever.setExit(true);
 			boolean messsageReceiverStatus = messageReceiverFuture.get();
 			
@@ -263,6 +284,11 @@ class UserSessionGroup implements Callable<Boolean> {
 
 			for (UserSession userSession : userSessions) {
 				userSession.shutdown();
+				int randomSleep = random.nextInt(2000);
+				while (randomSleep < 1500) {
+					randomSleep = random.nextInt(2000);
+				}
+				Thread.sleep(randomSleep);
 			}
 		} catch (Exception e) {
 			logger.severe("Error in session group " + groupName + ": " + e.getMessage());
@@ -339,23 +365,27 @@ class UserSession {
 			}
 			socketChannel.socket().connect(new InetSocketAddress(serverIPAddress, serverPort));
 			socketChannel.socket().setTcpNoDelay(true);
-			socketChannel.configureBlocking(false);
-			sendBuffer.put(username.getBytes());
-			sendBuffer.flip();
-			socketChannel.write(sendBuffer);
-			sendBuffer.clear();
+//			socketChannel.configureBlocking(false);
+			socketChannel.socket().getOutputStream().write(username.getBytes());
+//			sendBuffer.put(username.getBytes());
+//			sendBuffer.flip();
+//			socketChannel.write(sendBuffer);
+//			sendBuffer.clear();
 			//System.out.println("Sent the username " + username + " with " + bytesWritten + " bytes");
-			selector = Selector.open();
-			socketChannel.register(selector, SelectionKey.OP_READ);
-			selector.select();
-			int readBytes = socketChannel.read(recvBuffer);
+//			selector = Selector.open();
+//			socketChannel.register(selector, SelectionKey.OP_READ);
+//			selector.select();
+//			int readBytes = socketChannel.read(recvBuffer);
+			byte[] readyBytes = new byte[8];
+			int readBytes = socketChannel.socket().getInputStream().read(readyBytes);
 			if (readBytes == -1) {
 				throw new Exception("Server connection unexpectedly closed.");
 			} else if (readBytes > 0) {
-				recvBuffer.flip();
-				byte[] readyMessage = new byte[recvBuffer.limit()];
-				recvBuffer.get(readyMessage);
-				String ready = new String(readyMessage);
+//				recvBuffer.flip();
+//				byte[] readyMessage = new byte[recvBuffer.limit()];
+//				recvBuffer.get(readyMessage);
+//				String ready = new String(readyMessage);
+				String ready = new String(readyBytes);
 				if (ready.contains("ready")) {
 					userOutputStrategy.sendStatusOutput("Chat session established. Ready to send/recv messages.");
 					recvBuffer.clear();
@@ -580,6 +610,7 @@ class MessageReceiver implements Callable<Boolean> {
 		try {
 			Selector selector = Selector.open();
 			for (UserSession userSession : userSessions) {
+				userSession.getSocketChannel().configureBlocking(false);
 				userSession.getSocketChannel().register(selector, SelectionKey.OP_READ, userSession.getUsername());
 			}
 			while (!exit) {
