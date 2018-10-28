@@ -161,11 +161,21 @@ public class PerformanceChatClientApplication {
 			localHost = UUID.randomUUID().toString();
 			logger.warning("Couldn't determnine local host name, so will use UUID as session group prefix: " + localHost);
 		}
+		boolean sendMessages = false;
 		String groupNamePrefix = localHost + "-SessionGroup-";
 		for (int index = 0; index < groupCount; index++) {
 			String groupName = groupNamePrefix + index;
+			
+			// We want to have only one session in one group send messages
+			// At this point we don't have control of the individual sessions,
+			// but we can enable last session group to direct one of its
+			// session to send messages.
+			if (index == (groupCount - 1)) {
+				sendMessages = true;
+			}
+
 			UserSessionGroup userSessionGroup = 
-					new UserSessionGroup(groupNamePrefix + index, sessionsPerGroup, userOutputStrategy);
+					new UserSessionGroup(groupNamePrefix + index, sessionsPerGroup, sendMessages, userOutputStrategy);
 			Future<Boolean> future = executorService.submit(userSessionGroup);
 			userSessionGroupFutures.put(groupName, future);
 		}
@@ -217,11 +227,14 @@ class UserSessionGroup implements Callable<Boolean> {
 	private int sessionCount;
 	private String groupName;
 	private UserOutputStrategy userOutputStrategy;
+	private boolean sendMessages;
 	
-	public UserSessionGroup(String groupName, int sessionCount, UserOutputStrategy userOutputStrategy) {
+	public UserSessionGroup(String groupName, int sessionCount, boolean sendMessages,
+			UserOutputStrategy userOutputStrategy) {
 		this.sessionCount = sessionCount;
 		this.groupName = groupName;
 		this.userOutputStrategy = userOutputStrategy;
+		this.sendMessages = sendMessages;
 	}
 	
 	@Override
@@ -258,21 +271,25 @@ class UserSessionGroup implements Callable<Boolean> {
 			MessageReceiver messageReciever = new MessageReceiver(userSessions, userOutputStrategy);
 			Future<Boolean> messageReceiverFuture = executorService.submit(messageReciever);
 			
-			// Send 2 messages from first session with 2 to 5 second random delay
-			// between each message transmission.
-			/*
-			UserSession messageSendingSession = userSessions.get(0);
-			for (int index = 0; index < 2; index++) {
-				String message = "User Session " + messageSendingSession.getUsername() + " message number " + index;
-				messageSendingSession.sendMessage(message);
-				int randomSleep = random.nextInt(5000);
-				while (randomSleep < 2000) {
-					randomSleep = random.nextInt(5000);
+			Thread.sleep(30000);
+
+			// Send messages from one session only if this session group is enabled
+			// to send messages. If yes, then instruct the last session to send 
+			// messages with 2 to 5 second random delay between each message transmission.
+			if (sendMessages) {
+				userOutputStrategy.sendStatusOutput("Starting to send messages from session group " + groupName);
+				UserSession messageSendingSession = userSessions.get(userSessions.size() - 1);
+				for (int index = 0; index < 1; index++) {
+					String message = "User Session " + messageSendingSession.getUsername() + " message number " + index;
+					messageSendingSession.sendMessage(message);
+					int randomSleep = random.nextInt(5000);
+					while (randomSleep < 2000) {
+						randomSleep = random.nextInt(5000);
+					}
+					Thread.sleep(randomSleep);
 				}
-				Thread.sleep(randomSleep);
+				userOutputStrategy.sendStatusOutput("Completed sending messages for session group " + groupName);
 			}
-			userOutputStrategy.sendStatusOutput("Completed sending messages for session group " + groupName);
-			*/
 			
 			//Wait for some time for all message receipts to catch=up
 			Thread.sleep(60000);
