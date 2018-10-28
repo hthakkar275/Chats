@@ -1,1 +1,14 @@
 status: Chat session established. Ready to send/recv messages.
+status: Chat session established. Ready to send/recv messages.
+status: Looks like server is down
+status: Exit signal received
+status: Message receiver stopped
+status: Chat session established. Ready to send/recv messages.
+status: Looks like server is down
+status: Exit signal received
+status: Message receiver stopped
+status: User session is not established yet
+status: Error while attempt to establish chat session to the server.
+status: Chat session established. Ready to send/recv messages.
+status: Exit signal received
+status: Message receiver stopped

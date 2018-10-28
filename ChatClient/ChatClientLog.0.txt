@@ -1,2 +1,5 @@
 2018-10-26 20:39:02.570 INFO    - org.hemant.thakkar.chat.client.ChatClientApplication main - Starting chat client 
 2018-10-26 20:39:12.217 SEVERE  - org.hemant.thakkar.chat.client.TextUserOutput sendOutput - File for text-based output is not open 
+2018-10-28 17:41:08.537 INFO    - org.hemant.thakkar.chat.client.ChatClientApplication main - Starting chat client 
+2018-10-28 17:52:42.678 INFO    - org.hemant.thakkar.chat.client.ChatClientApplication main - Starting chat client 
+2018-10-28 17:53:35.802 SEVERE  - org.hemant.thakkar.chat.client.UserSession establishSession - Error while attempt to establish chat session to the server. Connection refused 

@@ -757,7 +757,7 @@ class UserSession {
 			closeResources();
 		} else {
 			this.executorService = Executors.newSingleThreadExecutor();
-			this.messageReceiver = new MessageReceiver(selector, socketChannel, userOutputStrategy);
+			this.messageReceiver = new MessageReceiver(this, selector, socketChannel, userOutputStrategy);
 			messageReceiverFuture = this.executorService.submit(messageReceiver);
 		}
 		return chatSessionEstablished;
@@ -765,19 +765,22 @@ class UserSession {
 	
 	public void shutdown() {
 		closeResources();
+		this.chatSessionEstablished = false;
 	}
 	
 	private void closeResources() {
 		try {
-			if (messageReceiver != null) {
-				messageReceiver.setExit(true);
-				Thread.sleep(2000);
+			if ((messageReceiverFuture != null) && (!messageReceiverFuture.isDone())) {
+				if (messageReceiver != null) {
+					messageReceiver.setExit(true);
+					Thread.sleep(2000);
+				}
+				if (messageReceiverFuture != null) {
+					messageReceiverFuture.cancel(false);
+					executorService.shutdown();
+					executorService.awaitTermination(2, TimeUnit.SECONDS);
+				} 
 			}
-			if (messageReceiverFuture != null) {
-				messageReceiverFuture.cancel(false);
-				executorService.shutdown();
-				executorService.awaitTermination(2, TimeUnit.SECONDS);
-			} 
 			if (selector != null) {
 				selector.close();
 			}
@@ -842,19 +845,21 @@ class MessageReceiver implements Callable<Boolean> {
 	private boolean exit;
 	private Selector selector;
 	private SocketChannel socketChannel;
+	private UserSession parentSession;
 	
 	// To send received messages to the user output.
 	private UserOutputStrategy userOutputStrategy;
 	private Boolean error;
 	private ByteBuffer recvBuffer;
 	
-	public MessageReceiver(Selector selector, SocketChannel socketChannel, 
-			UserOutputStrategy userOutputStrategy) {
+	public MessageReceiver(UserSession parentSession, Selector selector, 
+			SocketChannel socketChannel, UserOutputStrategy userOutputStrategy) {
 		this.error = false;
 		this.exit = false;
 		this.selector = selector;
 		this.recvBuffer = ByteBuffer.allocate(256);
 		this.socketChannel = socketChannel;
+		this.parentSession = parentSession;
 		this.userOutputStrategy = userOutputStrategy;
 	}
 	
@@ -878,6 +883,9 @@ class MessageReceiver implements Callable<Boolean> {
 					logger.finer("Message received");
 					if (receiveMessage()) {
 						userOutputStrategy.sendStatusOutput("Looks like server is down");
+						for (SelectionKey selectedKey : selectedKeys) {
+							selectedKey.cancel();
+						}
 						exit = true;
 					}
 				}
@@ -893,6 +901,7 @@ class MessageReceiver implements Callable<Boolean> {
 			logger.severe("Unexpected error while receiving messages. " + e.getMessage());
 		} finally {
 			userOutputStrategy.sendStatusOutput("Message receiver stopped");
+			parentSession.shutdown();
 		}
 		return this.error;
 	}
