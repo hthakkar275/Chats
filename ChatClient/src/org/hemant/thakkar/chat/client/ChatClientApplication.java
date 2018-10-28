@@ -369,8 +369,10 @@ class TextUserInterface implements UserInterfaceStrategy {
 					stop = true;
 				} else if (userInput.getCommand() == Command.Block) {
 					userConfiguration.blockUser(commandArgs[0].trim());
+					userSession.sendMessage("\\block " + commandArgs[0].trim());
 				} else if (userInput.getCommand() == Command.Unblock) {
 					userConfiguration.unblockUser(commandArgs[0].trim());
+					userSession.sendMessage("\\unblock " + commandArgs[0].trim());
 				} else if (userInput.getCommand() == Command.User) {
 					userConfiguration.setUsername(commandArgs[0].trim()); 
 					userOutput = new TextUserOutput();
