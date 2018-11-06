@@ -12,11 +12,13 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
+
 
 /**
  * Chat Server main application. It launches the UserSessionManager which handles all 
@@ -317,10 +319,18 @@ class UserSession implements MessageObserver {
 	// Current chat session state as determined by the chat session protocol.
 	private UserSessionState userSessionState;
 	
+	// Process received messages
+	private MessageProcessor messageProcessor;
+	
+	// Subscribe to receive messages from other users
+	private MessageDistributor messageDistributor;
+	
 	public UserSession(SocketChannel socketChannel) {
 		this.socketChannel = socketChannel;
 		this.partialMessage = new StringBuilder();
-		this.userSessionState = UserSessionState.ConnectedWithoutUsername;
+		setUserSessionState(UserSessionState.ConnectedWithoutUsername);
+		this.setMessageDistributor(MessageDistributor.getInstance());
+		this.setMessageProcessor(MessageProcessor.getInstance());
 	}
 	
 	// Implements the message observer interface. When the MessageDistributor
@@ -383,7 +393,7 @@ class UserSession implements MessageObserver {
 								// Message boundary found. Get the complete message.
 								logger.info("Message received from " + username);
 								Message message = createMessage(partialMessage.toString());
-								MessageProcessor.getInstance().process(message);
+								messageProcessor.process(message);
 								
 								// Cleanup the partial message for the next message data.
 								partialMessage = new StringBuilder();
@@ -414,7 +424,7 @@ class UserSession implements MessageObserver {
 			byteBuffer.flip();
 			socketChannel.write(byteBuffer);
 			userSessionState = UserSessionState.ConnectedReady;
-			MessageDistributor.getInstance().addObserver(this);
+			messageDistributor.addObserver(this);
 		} catch (IOException e) {
 			logger.severe("Error while sending ready signal for username." + e.getMessage());
 			closeSession();			
@@ -435,7 +445,11 @@ class UserSession implements MessageObserver {
 			message.setDestination(destination);
 			message.setData(data.replaceFirst("to:" + destination, ""));
 		} else {
-			message.setData(data);
+			if (data.startsWith("\\")) {
+				message.setData("\\" + data);
+			} else {
+				message.setData(data);
+			}
 		}
 		return message;
 	}
@@ -455,9 +469,9 @@ class UserSession implements MessageObserver {
 				byteBuffer.flip();
 				byte[] bytes = new byte[byteBuffer.limit()];
 				byteBuffer.get(bytes);
-				username = new String(bytes);
+				setUsername(new String(bytes));
 				logger.fine("Username received on session: " + username);
-				userSessionState = UserSessionState.ConnectedWithUsername;
+				setUserSessionState(UserSessionState.ConnectedWithUsername);
 			}
 		} catch (IOException e) {
 			logger.severe("Error while processing data for username." + e.getMessage());
@@ -470,7 +484,7 @@ class UserSession implements MessageObserver {
 	
 	private void closeSession() {
 		try {
-			MessageDistributor.getInstance().removeObserver(this);
+			messageDistributor.removeObserver(this);
 			userSessionState = UserSessionState.Disconnected;
 			socketChannel.socket().close();
 			socketChannel.close();
@@ -478,6 +492,23 @@ class UserSession implements MessageObserver {
 			logger.severe("Error while closing socket channel. " + e1.getMessage());
 		}
 	}
+	
+	void setUserSessionState(UserSessionState userSessionState) {
+		this.userSessionState = userSessionState;
+	}
+	
+	void setUsername(String username) {
+		this.username = username;
+	}
+	
+	void setMessageProcessor(MessageProcessor messageProcessor) {
+		this.messageProcessor = messageProcessor;
+	}
+	
+	 void setMessageDistributor(MessageDistributor messageDistributor) {
+		this.messageDistributor = messageDistributor;
+	}
+
 }
 
 /**
@@ -547,9 +578,39 @@ class Message {
 		return data;
 	}
 	public void setData(String data) {
-		this.data = source + ": " + data;
+		this.data = data;
+	}
+	public boolean equals(Object o) {
+		if (o == this) {
+			return true;
+		}
+		if (!(o instanceof Message)) {
+			return false;
+		}
+		Message m = (Message) o;
+		
+		boolean equality = true;
+		if (m.getData() != null && this.getData() != null) {
+			equality = m.getData().equals(this.getData());
+			if (m.getSource() != null && this.getSource() != null) {
+				equality = m.getSource().equals(this.getSource());
+			} else {
+				equality = false;
+			}
+			if (m.getDestination() != null && this.getDestination() != null) {
+				equality = m.getDestination().equals(this.getDestination());
+			} else {
+				equality = false;
+			}
+		} 
+		return equality;
+	}
+	
+	public int hashCode() {
+		return Objects.hash(data, source, destination);
 	}
 }
+	 
 
 /**
  * Process received messages. Interpret whether it is a command or a
@@ -564,12 +625,14 @@ class MessageProcessor {
 	private static final Logger logger = Logger.getLogger(MessageProcessor.class.getName());
 	private static MessageProcessor self = new MessageProcessor();
 	
+	private MessageDistributor messageDistributor;
+	
 	public static MessageProcessor getInstance() {
 		return self;
 	}
 	
 	private MessageProcessor() {
-		// Do nothing
+		setMessageDistributor(MessageDistributor.getInstance());
 	}
 
 	/**
@@ -629,23 +692,27 @@ class MessageProcessor {
 	public void process(Message message) {
 		MessageType messageType = getMessageType(message.getData());
 		if (messageType == MessageType.Message) {
-			MessageDistributor.getInstance().distributeMessage(message);
+			messageDistributor.distributeMessage(message);
 		} else {
 			Command command = getCommand(message.getData());
 			String[] commandArgs = getCommandArgs(message.getData());
 			if (command == Command.Block) {
 				logger.finest("User " + message.getSource() 
 						+ " requested to block messages from " + commandArgs[0]);
-				MessageDistributor.getInstance().blockSource(commandArgs[0], message.getSource());
+				messageDistributor.blockSource(message.getSource(), commandArgs[0]);
 			} else if (command == Command.Unblock) {
 				logger.finest("User " + message.getSource() 
 				+ " requested to unblock messages from " + commandArgs[0]);
-				MessageDistributor.getInstance().unblockSource(commandArgs[0], message.getSource());
+				messageDistributor.unblockSource(message.getSource(), commandArgs[0]);
 			} else {
 				logger.fine("Invalid command [" + message.getData() 
 					+ "] from user " + message.getSource());
 			}
 		}
+	}
+	
+	void setMessageDistributor(MessageDistributor messageDistributor) {
+		this.messageDistributor = messageDistributor;
 	}
 	
 }
@@ -670,14 +737,14 @@ class MessageDistributor {
 		return self;
 	}
 	
-	private MessageDistributor() {
+	MessageDistributor() {
 		this.observers = new HashMap<>();
 		this.blocked = new HashMap<>();
 	}
 	
 	public void distributeMessage(Message message) {
 		String destination = message.getDestination();
-		// If the message has a specific detination, then only 
+		// If the message has a specific destination, then only 
 		// send the message to that user.
 		if (destination != null) {
 			MessageObserver observer = observers.get(destination);
@@ -700,7 +767,7 @@ class MessageDistributor {
 		List<String> usersBlockedByObserver = blocked.get(observer.getId());
 		if ((usersBlockedByObserver == null) ||
 				(!usersBlockedByObserver.contains(source))) {
-			observer.messageReceived(data);
+			observer.messageReceived(source + ": " + data);
 		} else {
 			logger.finest("Did not send message to " + observer.getId());
 		}
@@ -715,19 +782,21 @@ class MessageDistributor {
 	}
 	
 	public void blockSource(String source, String destination) {
-		List<String> destinationsBlockedBySource = blocked.get(source);
-		if (destinationsBlockedBySource == null) {
-			destinationsBlockedBySource = new ArrayList<String>();
-			blocked.put(source, destinationsBlockedBySource);
+		List<String> sourcesBlockedByDestination = blocked.get(destination);
+		if (sourcesBlockedByDestination == null) {
+			sourcesBlockedByDestination = new ArrayList<String>();
+			blocked.put(destination, sourcesBlockedByDestination);
 		}
-		destinationsBlockedBySource.add(destination);
+		sourcesBlockedByDestination.add(source);
 	}
 	
 	public void unblockSource(String source, String destination) {
-		List<String> destinationsBlockedBySource = blocked.get(source);
-		if (destinationsBlockedBySource != null) {
-			destinationsBlockedBySource.remove(destination);
+		List<String> sourceBlockedByDestination = blocked.get(destination);
+		if (sourceBlockedByDestination != null) {
+			sourceBlockedByDestination.remove(source);
 		}
 	}
 	
 }
+
+
